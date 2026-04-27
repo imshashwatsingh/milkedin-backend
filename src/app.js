@@ -18,5 +18,11 @@ app.use(loggingMiddleware);
 import authRoutes from "./modules/auth/auth.routes.js";
 app.use("/api/auth", authRoutes);
 
+import categoryRoutes from "./modules/categories/category.routes.js";
+app.use("/api/categories", categoryRoutes);
+
+import recordsRoutes from "./modules/records/records.routes.js";
+app.use("/api/logs", recordsRoutes);
+
 
 export default app;

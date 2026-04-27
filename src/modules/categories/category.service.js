@@ -1,5 +1,5 @@
-import postgres from "../../../db/index.js";
-import ApiError from "../../../common/utils/api-error.js";
+import postgres from "../../common/config/db.js";
+import ApiError from "../../common/utils/api-error.js";
 
 // ➕ Add Category
 export const addCategory = async ({ userId, name, current_price }) => {

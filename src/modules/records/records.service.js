@@ -1,4 +1,4 @@
-import postgres from "../../common/config/db";
+import postgres from "../../common/config/db.js";
 
 import ApiError from "../../common/utils/api-error.js";
 
@@ -268,5 +268,5 @@ export {
   deleteRecord,
   getDailySummary,
   getRecordByDate,
-  getMonthlySummary
+  getMonthlySummary,
 };
