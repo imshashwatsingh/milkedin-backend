@@ -11,6 +11,7 @@ app.use(express.urlencoded({ extended: true }));
 const allowedOrigins = [
   "http://localhost:8081",
   "http://127.0.0.1:8081",
+  "https://milkedin-frontend.vercel.app",
 ];
 
 const corsOptions = {
