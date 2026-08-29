@@ -14,12 +14,15 @@
   "description": "",
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.1",
     "express": "^5.2.1",
     "joi": "^18.1.2",
     "jsonwebtoken": "^9.0.3",
     "mailtrap": "^4.5.1",
     "nodemailer": "^7.0.13",
-    "pg": "^8.20.0"
+    "pdfkit": "^0.15.2",
+    "pg": "^8.20.0",
+    "xlsx": "^0.18.5"
   }
 }

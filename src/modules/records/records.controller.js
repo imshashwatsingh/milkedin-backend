@@ -1,4 +1,5 @@
 import * as recordsService from "./records.service.js";
+import * as recordsExporter from "./records.exporter.js";
 import ApiResponse from "../../common/utils/api-response.js";
 import ApiError from "../../common/utils/api-error.js";
 
@@ -88,9 +89,9 @@ const getRecordByDate = async (req, res, next) => {
 const updateRecord = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const logId = parseInt(req.params.id, 10);
+    const logId = req.params.id;
 
-    if (isNaN(logId) || logId <= 0) {
+    if (!logId) {
       throw ApiError.badRequest("Invalid log ID");
     }
 
@@ -117,9 +118,9 @@ const updateRecord = async (req, res, next) => {
 const deleteRecord = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const logId = parseInt(req.params.id, 10);
+    const logId = req.params.id;
 
-    if (isNaN(logId) || logId <= 0) {
+    if (!logId) {
       throw ApiError.badRequest("Invalid log ID");
     }
 
@@ -195,6 +196,61 @@ const getMonthlySummary = async (req, res, next) => {
 };
 
 /**
+ * Export the user's records as a downloadable PDF or Excel file.
+ * GET /logs/export?format=pdf|excel&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ */
+const exportRecords = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+    const { startDate, endDate, format } = req.query;
+
+    if (startDate && !isValidDate(startDate)) {
+      throw ApiError.badRequest("Invalid startDate format. Use YYYY-MM-DD");
+    }
+    if (endDate && !isValidDate(endDate)) {
+      throw ApiError.badRequest("Invalid endDate format. Use YYYY-MM-DD");
+    }
+
+    const { records } = await recordsService.getRecords({
+      userId,
+      startDate: startDate || null,
+      endDate: endDate || null,
+    });
+
+    const meta = recordsExporter.buildExportMeta(records, {
+      title: "Milk Logs",
+      startDate,
+      endDate,
+    });
+
+    const filename = recordsExporter.buildFilename(meta, format);
+
+    if (format === "excel") {
+      const buffer = recordsExporter.generateExcel(records, meta);
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+      return res.send(buffer);
+    }
+
+    const buffer = await recordsExporter.generatePdf(records, meta);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`
+    );
+    return res.send(buffer);
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Helper function to validate date format (YYYY-MM-DD)
  */
 const isValidDate = (dateString) => {
@@ -224,5 +280,6 @@ export {
   deleteRecord,
   getDailySummary,
   getMonthlySummary,
+  exportRecords,
 };
 

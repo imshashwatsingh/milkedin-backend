@@ -4,125 +4,165 @@ import ApiResponse from "../../common/utils/api-response.js";
 /**
  * Register a new user
  */
-const register = async (req, res) => {
-  const { name, email, password } = req.body;
+const register = async (req, res, next) => {
+  try {
+    const { name, email, password } = req.body;
 
-  const result = await authService.register({
-    email,
-    full_name: name,
-    password,
-  });
+    const result = await authService.register({
+      email,
+      full_name: name,
+      password,
+    });
 
-  return ApiResponse.created(
-    res,
-    "User registered successfully",
-    result
-  );
+    return ApiResponse.created(
+      res,
+      "User registered successfully",
+      result
+    );
+  } catch (error) {
+    next(error);
+  }
 };
 
 /**
  * Login user
  */
-const login = async (req, res) => {
-  const { email, password } = req.body;
+const login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
 
-  const result = await authService.login({
-    email,
-    password,
-  });
+    const result = await authService.login({
+      email,
+      password,
+    });
 
-  return ApiResponse.ok(
-    res,
-    "Login successful",
-    result
-  );
+    return ApiResponse.ok(
+      res,
+      "Login successful",
+      result
+    );
+  } catch (error) {
+    next(error);
+  }
 };
 
 /**
  * Logout user
  */
-const logout = async (req, res) => {
-  const userId = req.user.id;
+const logout = async (req, res, next) => {
+  try {
+    const userId = req.user.id;
 
-  await authService.logout(userId);
+    await authService.logout(userId);
 
-  return ApiResponse.ok(
-    res,
-    "Logout successful"
-  );
+    return ApiResponse.ok(
+      res,
+      "Logout successful"
+    );
+  } catch (error) {
+    next(error);
+  }
 };
 
 /**
- * Forgot password - send reset link
+ * Forgot password - send reset code (OTP)
  */
-const forgotPassword = async (req, res) => {
-  const { email } = req.body;
+const forgotPassword = async (req, res, next) => {
+  try {
+    const { email } = req.body;
 
-  await authService.forgotPassword(email);
+    await authService.forgotPassword(email);
 
-  return ApiResponse.ok(
-    res,
-    "If email exists, password reset link has been sent"
-  );
+    return ApiResponse.ok(
+      res,
+      "If email exists, a password reset code has been sent"
+    );
+  } catch (error) {
+    next(error);
+  }
 };
 
 /**
- * Reset password with token
+ * Reset password with OTP
  */
-const resetPassword = async (req, res) => {
-  const { email, password} = req.body;
-  const { token } = req.query;
+const resetPassword = async (req, res, next) => {
+  try {
+    const { email, password, otp } = req.body;
 
-  await authService.resetPassword({
-    email,
-    newPassword: password,
-    rawToken: token,
-  });
+    await authService.resetPassword({
+      email,
+      newPassword: password,
+      otp,
+    });
 
-  return ApiResponse.ok(
-    res,
-    "Password reset successfully"
-  );
+    return ApiResponse.ok(
+      res,
+      "Password reset successfully"
+    );
+  } catch (error) {
+    next(error);
+  }
 };
-
-/**
- * Verify email (placeholder for future implementation)
- */
-// const verifyEmail = async (req, res) => {
-//   const { token } = req.body;
-
-//   // TODO: Implement email verification logic
-//   // This would involve:
-//   // 1. Verifying the token
-//   // 2. Marking user as verified in database
-//   // 3. Returning success response
-
-//   return ApiResponse.ok(
-//     res,
-//     "Email verification feature coming soon"
-//   );
-// };
 
 /**
  * Refresh access token
  */
-const refreshToken = async (req, res) => {
-  const { refreshToken: token } = req.body;
+const refreshToken = async (req, res, next) => {
+  try {
+    const { refreshToken: token } = req.body;
 
-  const result = await authService.refreshToken(token);
+    const result = await authService.refreshToken(token);
 
-  return ApiResponse.ok(
-    res,
-    "Access token refreshed",
-    result
-  );
+    return ApiResponse.ok(
+      res,
+      "Access token refreshed",
+      result
+    );
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Update the signed-in user's profile (name, email and/or password)
+ */
+const updateProfile = async (req, res, next) => {
+  try {
+    const { full_name, email, current_password, new_password } = req.body;
+
+    const result = await authService.updateProfile({
+      userId: req.user.id,
+      full_name,
+      email,
+      current_password,
+      new_password,
+    });
+
+    return ApiResponse.ok(res, "Profile updated successfully", result);
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getMe = async (req, res, next) => {
+  try {
+    return ApiResponse.ok(
+      res,
+      "User data retrieved",
+      req.user
+    );
+  } catch (error) {
+    next(error);
+  }
 };
 
 export {
   register,
   login,
+  getMe,
   logout,
   forgotPassword,
   resetPassword,
   refreshToken,
+  updateProfile,
 };

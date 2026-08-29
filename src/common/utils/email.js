@@ -91,34 +91,31 @@ class EmailService {
   }
 
   /**
-   * Send forgot password email
+   * Send password reset OTP email
    * @param {string} to - User email
-   * @param {string} resetToken - Password reset token
+   * @param {string} otp - One-time password (reset code)
    * @param {string} userName - User name
    * @returns {Promise<Object>}
    */
-  async sendForgotPasswordEmail(to, resetToken, userName) {
-    const resetLink = `${process.env.APP_URL || "http://localhost:3000"}/reset-password?token=${resetToken}`;
-    
-    const subject = `Password Reset Request - ${this.appName}`;
+  async sendOtpEmail(to, otp, userName) {
+    const subject = `Your Password Reset Code - ${this.appName}`;
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background-color: #f8f9fa; padding: 20px; text-align: center;">
-          <h2 style="color: #d9534f;">Password Reset Request</h2>
+          <h2 style="color: #d9534f;">Password Reset Code</h2>
         </div>
         <div style="padding: 20px;">
           <p>Hi <strong>${userName}</strong>,</p>
-          <p>We received a request to reset your password. If you didn't make this request, you can ignore this email.</p>
+          <p>We received a request to reset your password. Use the code below to set a new password. If you didn't make this request, you can ignore this email.</p>
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${resetLink}" style="display: inline-block; padding: 12px 30px; background-color: #0066cc; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">
-              Reset Password
-            </a>
+            <div style="display: inline-block; padding: 16px 32px; letter-spacing: 8px; font-size: 28px; font-weight: bold; color: #0066cc; background-color: #e8f4f8; border: 1px dashed #0066cc; border-radius: 6px;">
+              ${otp}
+            </div>
           </div>
-          <p style="font-size: 12px; color: #666;">Or copy and paste this link in your browser:<br/>${resetLink}</p>
-          <p style="margin-top: 20px; color: #999; font-size: 12px;">This link will expire in 1 hour.</p>
+          <p style="margin-top: 20px; color: #999; font-size: 12px;">This code will expire in 10 minutes.</p>
           <div style="margin-top: 30px; padding: 15px; background-color: #fff3cd; border-left: 4px solid #ff9800;">
             <p style="margin: 0; color: #856404; font-size: 12px;">
-              <strong>Security Tip:</strong> Never share this link with anyone. ${this.appName} staff will never ask for your password.
+              <strong>Security Tip:</strong> Never share this code with anyone. ${this.appName} staff will never ask for your password.
             </p>
           </div>
         </div>
@@ -168,7 +165,7 @@ class EmailService {
    * @returns {Promise<Object>}
    */
   async sendVerificationEmail(to, verificationToken, userName) {
-    const verificationLink = `${process.env.APP_URL || "http://localhost:3000"}/verify-email?token=${verificationToken}`;
+    const verificationLink = `${process.env.APP_URL || "milkdin://"}/verify-email?token=${verificationToken}`;
     
     const subject = `Verify Your Email - ${this.appName}`;
     const html = `
@@ -237,7 +234,7 @@ try {
     sendWelcomeEmail: async () => {
       throw new Error("Email service not configured. Please set GOOGLE_USER_EMAIL and GOOGLE_PASS_EMAIL in .env");
     },
-    sendForgotPasswordEmail: async () => {
+    sendOtpEmail: async () => {
       throw new Error("Email service not configured. Please set GOOGLE_USER_EMAIL and GOOGLE_PASS_EMAIL in .env");
     },
     sendPasswordResetConfirmationEmail: async () => {

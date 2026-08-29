@@ -4,6 +4,7 @@ import GetDailySummaryQueryDto from "./GetDailySummaryQuery.dto.js";
 import GetRecordsQueryDto from "./GetRecordsQuery.dto.js";
 import UpdateRecordDto from "./UpdateRecord.dto.js";   
 import GetMonthlySummaryQueryDto from "./GetMonthlySummaryQuery.dto.js";
+import ExportQueryDto from "./ExportQuery.dto.js";
 
 export {
     AddRecordDto,
@@ -11,5 +12,6 @@ export {
     GetDailySummaryQueryDto,
     GetRecordsQueryDto,
     UpdateRecordDto,
-    GetMonthlySummaryQueryDto
+    GetMonthlySummaryQueryDto,
+    ExportQueryDto
 };

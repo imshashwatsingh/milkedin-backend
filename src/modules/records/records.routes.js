@@ -1,7 +1,7 @@
 import { Router } from "express";
 import * as recordsController from "./records.controller.js";
 import validate from "../../common/middleware/validate.middleware.js";
-import { AddRecordDto, UpdateRecordDto , GetDailySummaryQueryDto, GetMonthlySummaryQueryDto, GetRecordsQueryDto, GetRecordByDateQueryDto,  } from "./dto/index.js";
+import { AddRecordDto, UpdateRecordDto , GetDailySummaryQueryDto, GetMonthlySummaryQueryDto, GetRecordsQueryDto, GetRecordByDateQueryDto, ExportQueryDto } from "./dto/index.js";
 import { authenticate } from "../auth/auth.middleware.js";
 
 const router = Router();
@@ -42,6 +42,13 @@ router.get("/summary/daily",validate(GetDailySummaryQueryDto) ,recordsController
  * Query param: month (required, format: YYYY-MM)
  */
 router.get("/summary/monthly", validate(GetMonthlySummaryQueryDto),recordsController.getMonthlySummary);
+
+/**
+ * GET /api/logs/export
+ * Export records as a downloadable PDF or Excel file.
+ * Query params: format (pdf|excel, default pdf), startDate, endDate (optional, YYYY-MM-DD)
+ */
+router.get("/export", validate(ExportQueryDto), recordsController.exportRecords);
 
 /**
  * PUT /api/logs/:id

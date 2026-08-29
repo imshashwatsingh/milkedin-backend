@@ -6,8 +6,8 @@
     password_hash: string 
     role: string (not null, default 'user')
     refresh_token: string (nullable)
-    reset_password_token: string (nullable)
-    reset_password_expires: timestamp (nullable)
+    reset_otp: string (nullable)
+    reset_otp_expires: timestamp (nullable)
     created_at: timestamp (default now())
     updated_at: timestamp (default now())
 */

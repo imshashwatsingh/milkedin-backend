@@ -2,7 +2,6 @@ import ApiError from "../../common/utils/api-error.js";
 import {
   generateAccessToken,
   generateRefreshToken,
-  generateResetToken,
   verifyRefreshToken,
 } from "../../common/utils/jwt.utils.js";
 import postgres from "../../common/config/db.js";
@@ -10,6 +9,8 @@ import emailService from "../../common/utils/email.js";
 // import  emailService  from "../../common/utils/emailInitializer.js";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
+
+const generateOtp = () => String(crypto.randomInt(0, 1000000)).padStart(6, "0");
 
 const hashToken = (token) =>
   crypto.createHash("sha256").update(token).digest("hex");
@@ -99,41 +100,45 @@ const refreshToken = async (token) => {
 const forgotPassword = async (email) => {
   const userResult = await postgres.query(
     `SELECT id,email,full_name FROM users WHERE email = $1`,
-    [email]
+    [email],
   );
 
+  // Always respond identically so we never reveal whether an account exists.
   if (!userResult.rows.length) {
-    throw ApiError.unauthorized("User not found");
+    return {
+      success: true,
+      message: "If email exists, a password reset code has been sent",
+    };
   }
 
   const user = userResult.rows[0];
 
-  const tokens = generateResetToken();
-
-  console.log("RAW:", tokens.rawToken);
-  console.log("HASHED:", tokens.hashedToken);
+  const otp = generateOtp();
 
   await postgres.query(
     `UPDATE users 
-     SET reset_password_token = $1, 
-         reset_password_expires = NOW() + INTERVAL '1 hour' 
+     SET reset_otp = $1, 
+         reset_otp_expires = NOW() + INTERVAL '10 minutes' 
      WHERE id = $2`,
-    [tokens.hashedToken, user.id] 
+    [otp, user.id],
   );
 
-  // Send reset email
+  // Send the reset code by email
   try {
-    await emailService.sendPasswordResetEmail(user.email, user.full_name, tokens.rawToken);
+    await emailService.sendOtpEmail(user.email, otp, user.full_name);
   } catch (error) {
-    console.error("Failed to send password reset email:", error);
+    console.error("Failed to send password reset OTP:", error);
   }
 
-  return { success: true, message: "If email exists, password reset link has been sent" };
+  return {
+    success: true,
+    message: "If email exists, a password reset code has been sent",
+  };
 };
 
-const resetPassword = async ({ email, newPassword, rawToken }) => {
+const resetPassword = async ({ email, newPassword, otp }) => {
   const userResult = await postgres.query(
-    `SELECT id, email, full_name, reset_password_token, reset_password_expires 
+    `SELECT id, email, full_name, reset_otp, reset_otp_expires 
      FROM users WHERE email = $1`,
     [email],
   );
@@ -144,30 +149,13 @@ const resetPassword = async ({ email, newPassword, rawToken }) => {
 
   const user = userResult.rows[0];
 
-  const hashedToken = hashToken(rawToken);
-  console.log("RESET TOKEN:", rawToken);
-  
-
-  // console.log("---- DEBUG START ----");
-  // console.log("RAW TOKEN:", rawToken);
-  // console.log("HASHED INPUT:", hashToken(rawToken));
-  // console.log("HASHED DB:", user.reset_password_token);
-  // console.log(
-  //   "TOKEN MATCH:",
-  //   user.reset_password_token === hashToken(rawToken),
-  // );
-
-  // console.log("EXPIRY:", user.reset_password_expires);
-  // console.log("NOW:", new Date());
-  // console.log("IS EXPIRED:", new Date() > user.reset_password_expires);
-  // console.log("---- DEBUG END ----");
-
   if (
-    user.reset_password_token !== hashedToken ||
-    !user.reset_password_expires ||
-    new Date() > user.reset_password_expires
+    !user.reset_otp ||
+    user.reset_otp !== otp ||
+    !user.reset_otp_expires ||
+    new Date() > user.reset_otp_expires
   ) {
-    throw ApiError.unauthorized("Invalid or expired reset token");
+    throw ApiError.unauthorized("Invalid or expired reset code");
   }
 
   const hashedPassword = await bcrypt.hash(newPassword, 12);
@@ -179,8 +167,8 @@ const resetPassword = async ({ email, newPassword, rawToken }) => {
       `UPDATE users 
        SET password = $1,
            refresh_token = NULL,
-           reset_password_token = NULL,
-           reset_password_expires = NULL
+            reset_otp = NULL,
+            reset_otp_expires = NULL
        WHERE id = $2`,
       [hashedPassword, user.id],
     );
@@ -203,4 +191,102 @@ const resetPassword = async ({ email, newPassword, rawToken }) => {
   return { success: true, message: "Password reset successfully" };
 };
 
-export { register, login, logout, forgotPassword, resetPassword, refreshToken };
+const updateProfile = async ({
+  userId,
+  full_name,
+  email,
+  current_password,
+  new_password,
+}) => {
+  const userResult = await postgres.query(
+    `SELECT id, email, full_name, password, role FROM users WHERE id = $1`,
+    [userId],
+  );
+
+  if (!userResult.rows.length) {
+    throw ApiError.unauthorized("User not found");
+  }
+
+  const user = userResult.rows[0];
+  const updates = {};
+
+  if (full_name !== undefined) {
+    updates.full_name = full_name;
+  }
+
+  if (email !== undefined && email !== user.email) {
+    const existingResult = await postgres.query(
+      `SELECT id FROM users WHERE email = $1 AND id <> $2`,
+      [email, userId],
+    );
+    if (existingResult.rows.length) {
+      throw ApiError.badRequest("Email already in use");
+    }
+    updates.email = email;
+  }
+
+  if (new_password !== undefined) {
+    if (!current_password) {
+      throw ApiError.badRequest(
+        "Your current password is required to set a new password",
+      );
+    }
+    const isCurrentValid = await bcrypt.compare(current_password, user.password);
+    if (!isCurrentValid) {
+      throw ApiError.badRequest("Your current password is incorrect");
+    }
+    updates.password = await bcrypt.hash(new_password, 12);
+  }
+
+  if (Object.keys(updates).length === 0) {
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role,
+      },
+    };
+  }
+
+  const setClauses = [];
+  const values = [];
+  let paramIndex = 1;
+  for (const [column, value] of Object.entries(updates)) {
+    setClauses.push(`${column} = $${paramIndex}`);
+    values.push(value);
+    paramIndex += 1;
+  }
+  values.push(userId);
+
+  await postgres.query(
+    `UPDATE users SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`,
+    values,
+  );
+
+  const updatedResult = await postgres.query(
+    `SELECT id, email, full_name, role FROM users WHERE id = $1`,
+    [userId],
+  );
+  const updated = updatedResult.rows[0];
+
+  return {
+    user: {
+      id: updated.id,
+      email: updated.email,
+      full_name: updated.full_name,
+      role: updated.role,
+    },
+  };
+};
+
+export {
+  register,
+  login,
+  logout,
+  forgotPassword,
+  resetPassword,
+  refreshToken,
+  updateProfile,
+};
+
