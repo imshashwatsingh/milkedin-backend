@@ -41,6 +41,10 @@ app.use(cors(corsOptions));
 // Express 5-compatible wildcard
 app.options('/{*splat}', cors(corsOptions));
 
+app.get("/", (req, res) => {
+  res.status(200).json({ message: "Welcome to the Milk Logs API!" });
+});
+
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
 });
