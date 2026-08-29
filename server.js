@@ -19,4 +19,15 @@ const startServer = async () => {
   }
 };
 
-startServer();
+// Export the Express app for serverless platforms (e.g. Vercel @vercel/node),
+// which invoke the default export as a request handler.
+export default app;
+
+// Only start the HTTP listener when executed directly (local dev / `npm start`).
+// When imported as a serverless handler, we must NOT call app.listen().
+import { pathToFileURL } from "url";
+const isMain =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  startServer();
+}
