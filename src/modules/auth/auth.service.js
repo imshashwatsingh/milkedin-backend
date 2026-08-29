@@ -198,6 +198,12 @@ const updateProfile = async ({
   current_password,
   new_password,
 }) => {
+  // Deep guard: email is intentionally read-only and must never be changed
+  // through this endpoint, even if a client sends it in the payload.
+  if (email !== undefined) {
+    throw ApiError.badRequest("Email address cannot be changed.");
+  }
+
   const userResult = await postgres.query(
     `SELECT id, email, full_name, password, role FROM users WHERE id = $1`,
     [userId],
@@ -212,17 +218,6 @@ const updateProfile = async ({
 
   if (full_name !== undefined) {
     updates.full_name = full_name;
-  }
-
-  if (email !== undefined && email !== user.email) {
-    const existingResult = await postgres.query(
-      `SELECT id FROM users WHERE email = $1 AND id <> $2`,
-      [email, userId],
-    );
-    if (existingResult.rows.length) {
-      throw ApiError.badRequest("Email already in use");
-    }
-    updates.email = email;
   }
 
   if (new_password !== undefined) {
