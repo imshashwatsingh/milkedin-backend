@@ -7,16 +7,25 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// CORS configuration - allow frontend origin with credentials
+// CORS configuration - allow frontend origin(s) with credentials
 const allowedOrigins = [
   "http://localhost:8081",
   "http://127.0.0.1:8081",
   "https://milkedin-frontend.vercel.app",
 ];
 
+// Allow any Vercel deployment (production, previews, custom domains on vercel.app)
+// so web builds don't fail CORS on preview URLs.
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  if (origin.endsWith(".vercel.app")) return true;
+  return false;
+};
+
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (isAllowedOrigin(origin)) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));
