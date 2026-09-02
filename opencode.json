@@ -1,0 +1,54 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "username": "milk_logs_backend",
+  "model": "anthropic/claude-sonnet-4",
+  "small_model": "anthropic/claude-3-haiku",
+  "default_agent": "explore",
+  "logLevel": "INFO",
+  "share": "manual",
+  "snapshot": true,
+  "instructions": ["AGENTS.md"],
+
+  "skills": {
+    "paths": [".opencode/skills"],
+    "urls": []
+  },
+
+  "references": {
+    "readme": {
+      "path": "./README.md",
+      "description": "Use for project architecture, API reference, and setup details"
+    },
+    "src": {
+      "path": "./src",
+      "description": "Use for source code patterns, conventions, and architecture"
+    }
+  },
+
+  "agent": {
+    "explore": {
+      "mode": "subagent",
+      "model": "anthropic/claude-sonnet-4",
+      "description": "Explores the milk_logs_backend codebase architecture",
+      "permission": {
+        "edit": "ask",
+        "bash": "ask"
+      }
+    },
+    "code-review": {
+      "mode": "subagent",
+      "model": "anthropic/claude-sonnet-4",
+      "description": "Reviews code against the project's architecture conventions",
+      "permission": {
+        "edit": "deny",
+        "bash": "ask"
+      }
+    }
+  },
+
+  "permission": {
+    "edit": "ask",
+    "bash": { "git *": "allow", "*": "ask" },
+    "external_directory": { "~/*": "allow", "*": "deny" }
+  }
+}
