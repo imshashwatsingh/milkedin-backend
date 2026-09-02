@@ -63,6 +63,9 @@ app.use("/api/categories", categoryRoutes);
 import recordsRoutes from "./modules/records/records.routes.js";
 app.use("/api/logs", recordsRoutes);
 
+import aiRoutes from "./modules/ai/ai.routes.js";
+app.use("/api/ai", aiRoutes);
+
 // Global Error Handler (Express 5)
 import ApiError from "./common/utils/api-error.js";
 app.use((err, req, res, next) => {

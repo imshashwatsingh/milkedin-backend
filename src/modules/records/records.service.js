@@ -261,6 +261,115 @@ const getMonthlySummary = async ({ userId, month }) => {
   };
 };
 
+const getCategoryStats = async ({ userId, startDate, endDate }) => {
+  let query = `
+    SELECT 
+      c.name AS category,
+      COALESCE(SUM(ml.quantity_liters), 0) AS total_quantity_liters,
+      COALESCE(SUM(ml.total_price), 0) AS total_spent,
+      COUNT(ml.id)::int AS entry_count
+    FROM milk_logs ml
+    JOIN categories c ON ml.category_id = c.id
+    WHERE ml.user_id = $1
+  `;
+  const params = [userId];
+  if (startDate && endDate) {
+    query += ` AND ml.log_date BETWEEN $${params.length + 1} AND $${params.length + 2}`;
+    params.push(startDate, endDate);
+  } else if (startDate) {
+    query += ` AND ml.log_date >= $${params.length + 1}`;
+    params.push(startDate);
+  } else if (endDate) {
+    query += ` AND ml.log_date <= $${params.length + 1}`;
+    params.push(endDate);
+  }
+  query += ` GROUP BY c.name ORDER BY total_spent DESC`;
+
+  const result = await postgres.query(query, params);
+  return {
+    categories: result.rows.map((r) => ({
+      category: r.category,
+      total_quantity_liters: parseFloat(r.total_quantity_liters),
+      total_spent: parseFloat(r.total_spent),
+      entry_count: Number(r.entry_count),
+    })),
+  };
+};
+
+const comparePeriods = async ({ userId, currentStart, currentEnd, previousStart, previousEnd }) => {
+  const sumQuery = `
+    SELECT 
+      COALESCE(SUM(quantity_liters), 0) AS total_quantity,
+      COALESCE(SUM(total_price), 0) AS total_amount
+    FROM milk_logs
+    WHERE user_id = $1 AND log_date BETWEEN $2 AND $3
+  `;
+  const [currentRes, previousRes] = await Promise.all([
+    postgres.query(sumQuery, [userId, currentStart, currentEnd]),
+    postgres.query(sumQuery, [userId, previousStart, previousEnd]),
+  ]);
+  const current = {
+    quantity: parseFloat(currentRes.rows[0].total_quantity),
+    amount: parseFloat(currentRes.rows[0].total_amount),
+  };
+  const previous = {
+    quantity: parseFloat(previousRes.rows[0].total_quantity),
+    amount: parseFloat(previousRes.rows[0].total_amount),
+  };
+  const pct = (cur, prev) => {
+    if (prev === 0) return cur === 0 ? 0 : 100;
+    return parseFloat(((cur - prev) / prev * 100).toFixed(2));
+  };
+  return {
+    current,
+    previous,
+    change: {
+      quantity: pct(current.quantity, previous.quantity),
+      amount: pct(current.amount, previous.amount),
+    },
+  };
+};
+
+const getHistoricalMonthlySpending = async ({ userId, startMonth, endMonth }) => {
+  let query = `
+    SELECT 
+      TO_CHAR(DATE_TRUNC('month', log_date), 'YYYY-MM') AS month,
+      COALESCE(SUM(quantity_liters), 0) AS total_quantity,
+      COALESCE(SUM(total_price), 0) AS total_amount
+    FROM milk_logs
+    WHERE user_id = $1
+  `;
+  const params = [userId];
+  if (startMonth && endMonth) {
+    query += ` AND DATE_TRUNC('month', log_date) BETWEEN DATE_TRUNC('month', $${params.length + 1}::date) AND DATE_TRUNC('month', $${params.length + 2}::date)`;
+    params.push(`${startMonth}-01`, `${endMonth}-01`);
+  } else if (startMonth) {
+    query += ` AND DATE_TRUNC('month', log_date) >= DATE_TRUNC('month', $${params.length + 1}::date)`;
+    params.push(`${startMonth}-01`);
+  } else if (endMonth) {
+    query += ` AND DATE_TRUNC('month', log_date) <= DATE_TRUNC('month', $${params.length + 2}::date)`;
+    params.push(`${endMonth}-01`);
+  }
+  query += ` GROUP BY DATE_TRUNC('month', log_date) ORDER BY month ASC`;
+
+  const result = await postgres.query(query, params);
+  const months = result.rows.map((r) => ({
+    month: r.month,
+    total_quantity: parseFloat(r.total_quantity),
+    total_amount: parseFloat(r.total_amount),
+  }));
+  let highest = null;
+  for (const m of months) {
+    if (!highest || m.total_amount > highest.total_amount) {
+      highest = { month: m.month, total_amount: m.total_amount };
+    }
+  }
+  return {
+    months,
+    highest_spending_month: highest,
+  };
+};
+
 export {
   addRecord,
   getRecords,
@@ -269,4 +378,7 @@ export {
   getDailySummary,
   getRecordByDate,
   getMonthlySummary,
+  getCategoryStats,
+  comparePeriods,
+  getHistoricalMonthlySpending,
 };

@@ -17,6 +17,7 @@ Built with **Node.js + Express 5** and **PostgreSQL**, the codebase follows a cl
   - [Auth](#auth-api)
   - [Categories](#categories-api)
   - [Milk Logs](#milk-logs-api)
+  - [AI Assistant](#ai-assistant)
   - [System](#system)
 - [Authentication Flow](#authentication-flow)
 - [Request Validation](#request-validation)
@@ -38,6 +39,7 @@ Built with **Node.js + Express 5** and **PostgreSQL**, the codebase follows a cl
 - **Milk log entries** — add, update, delete, and query milk consumption records.
 - **Aggregated summaries** — daily totals and full monthly breakdowns with per-day detail.
 - **PDF & Excel export** — generate downloadable reports for any date range.
+- **Natural Language AI Assistant** — ask questions like "How much did I spend last month?" via Gemini tool-calling (`POST /api/ai/chat`).
 - **Input validation** — every request is validated with [Joi](https://joi.dev/) DTOs.
 - **Security** — `bcrypt` password hashing, JWT access + refresh tokens, CORS allow-listing.
 - **Observability** — request/response logging middleware and a `/health` endpoint.
@@ -55,6 +57,7 @@ Built with **Node.js + Express 5** and **PostgreSQL**, the codebase follows a cl
 | Validation     | `joi`                                    |
 | Email          | `nodemailer` (Gmail + App Password)      |
 | Reporting      | `pdfkit` (PDF), `xlsx` (Excel)           |
+| AI             | `@google/genai` (Gemini tool-calling)    |
 | Config         | `dotenv`                                 |
 | CORS           | `cors`                                   |
 
@@ -127,14 +130,21 @@ milk_logs_backend/
         │   ├── category.controller.js
         │   ├── category.service.js
         │   └── dto/                # Add, Update
-        └── records/
-            ├── records.routes.js
-            ├── records.controller.js
-            ├── records.service.js
-            ├── records.model.js    # milk_logs table schema
-            ├── records.exporter.js # PDF + Excel generation
-            ├── records.middleware.js
-            └── dto/                # Add, Update, query, summary, export
+        ├── records/
+        │   ├── records.routes.js
+        │   ├── records.controller.js
+        │   ├── records.service.js  # + getCategoryStats, comparePeriods, getHistoricalMonthlySpending
+        │   ├── records.model.js    # milk_logs table schema
+        │   ├── records.exporter.js # PDF + Excel generation
+        │   ├── records.middleware.js
+        │   └── dto/                # Add, Update, query, summary, export
+        └── ai/
+            ├── ai.routes.js        # POST /api/ai/chat (auth required)
+            ├── ai.controller.js
+            ├── ai.service.js       # Gemini tool-calling loop
+            ├── ai.tools.js         # 6 tool definitions + executors
+            ├── ai.prompts.js       # System instruction (Asia/Kolkata)
+            └── dto/Chat.dto.js
 ```
 
 ---
@@ -235,6 +245,30 @@ Base path: `/api/logs` — **all routes require authentication.**
 | PUT    | `/:id`                  | `categoryId`, `quantity`, `record_date`       | Update a log entry.                          |
 | DELETE | `/:id`                  | —                                             | Delete a log entry.                          |
 
+### AI Assistant API
+
+Base path: `/api/ai` — **all routes require authentication.**
+
+| Method | Endpoint | Body | Description |
+| ------ | -------- | ---- | ----------- |
+| POST   | `/chat`  | `message` (string, 1–1000 chars) | Ask a natural-language question; returns `{ answer, tools_used }` |
+
+Example:
+```bash
+curl -X POST http://localhost:3000/api/ai/chat \
+  -H "Authorization: Bearer <accessToken>" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"How much did I spend on milk last month?"}'
+```
+Response:
+```json
+{
+  "success": true,
+  "message": "AI response generated successfully",
+  "data": { "answer": "You spent ₹1,780 on milk last month across 29.6 litres.", "tools_used": ["get_monthly_summary"] }
+}
+```
+
 ### System
 
 | Method | Endpoint    | Description                                  |
@@ -320,6 +354,71 @@ formatted in Indian numbering (`Rs 1,23,456.00`) and quantities in litres.
 
 ---
 
+## AI Assistant
+
+A natural-language layer over the existing MilkEdin domain powered by **Google Gemini** with **tool-calling**.
+
+### Purpose
+
+Let authenticated users ask questions like:
+
+- "How much did I spend on milk last month?"
+- "Which milk did I consume the most?"
+- "Compare this month with last month"
+- "What was my most expensive month?"
+
+### Architecture
+
+```
+POST /api/ai/chat (authenticate → validate(ChatDto) → ai.controller → ai.service → Gemini)
+  → Gemini decides which tool(s) to call → Tool Execution Layer (allow-list) → records service → PostgreSQL
+  → tool result → Gemini → natural-language answer → ApiResponse { answer, tools_used }
+```
+
+Gemini never touches PostgreSQL, never sees credentials, never builds SQL, and never controls `userId`. The backend injects `req.user.id` for every tool call and validates all arguments.
+
+### Tools (all user-scoped)
+
+| Tool | Purpose | Key Args |
+|------|---------|----------|
+| `get_daily_summary` | Consumption/spending for a date | `date: YYYY-MM-DD` |
+| `get_monthly_summary` | Month totals + daily breakdown | `month: YYYY-MM` |
+| `get_records` | Detailed records for a range | `start_date`, `end_date` |
+| `get_category_stats` | Aggregation by category | `start_date`, `end_date` |
+| `compare_periods` | Deterministic % change between two periods | `current_start/end`, `previous_start/end` |
+| `get_historical_monthly_spending` | Monthly totals + highest month | `start_month`, `end_month` (optional) |
+
+Deterministic work (aggregation, percentages, sorting, highest-month) is done in SQL/JS, not by the LLM.
+
+### Endpoint & Security
+
+- `POST /api/ai/chat` — requires `Authorization: Bearer <accessToken>`.
+- Body validated with `ChatDto` (`message` 1–1000 chars, rejects empty/whitespace).
+- `userId` is always `req.user.id`; model-provided IDs are ignored.
+- Tool names are allow-listed; unknown tools return `400`.
+- Bounded loop (`MAX_TOOL_CALLS = 5`) prevents infinite calls.
+- Compact tool results are sent to Gemini (no `user_id`, `created_at`, etc.).
+
+### System Prompt
+
+MilkEdin AI knows the app tracks milk by category with price snapshots, all data is private, and tools must be used for factual questions. It never invents data, never exposes internals, uses ₹ and litres, asks for clarification on ambiguous periods ("recently"), and handles out-of-scope questions with a polite redirect.
+
+### Date Handling
+
+Relative dates are resolved against **Asia/Kolkata (IST, UTC+5:30)** supplied as `Today's date (Asia/Kolkata): YYYY-MM-DD` in the user prompt. No heavy timezone library is introduced.
+
+### Error Handling
+
+Missing `GEMINI_API_KEY` → `500` config error; timeouts (30s), rate limits (429), and invalid Gemini responses are mapped to safe `ApiError` messages without leaking internals. Tool errors are returned to Gemini so it can explain gracefully.
+
+### How to run
+
+1. Add `GEMINI_API_KEY` and optional `GEMINI_MODEL` (default `gemini-2.0-flash`) to `.env`.
+2. `npm install && npm run dev`
+3. `curl -X POST http://localhost:3000/api/ai/chat -H "Authorization: Bearer <token>" -d '{"message":"How much did I drink in July?"}'`
+
+---
+
 ## Error Handling
 
 A single global error handler (`app.js`) catches everything:
@@ -396,6 +495,8 @@ See `.env.example` for the full list. Required/important keys:
 | `GOOGLE_PASS_EMAIL`      | Gmail **App Password** (not your normal password).       |
 | `EMAIL_FROM`             | Optional override for the "from" address.                |
 | `APP_URL`                | Base URL used in email links (e.g. `http://localhost:3000`). |
+| `GEMINI_API_KEY`         | Google Gemini API key (required for AI assistant).       |
+| `GEMINI_MODEL`           | Gemini model (default `gemini-2.0-flash`).                |
 
 > **Gmail note:** Enable 2-Step Verification on the Google account and create
 > an [App Password](https://myaccount.google.com/apppasswords) for
