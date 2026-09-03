@@ -1,6 +1,7 @@
-# Milk Logs — Backend API
+# milkedIn — Backend API
+> **Project formerly "Milk Logs"** — all docs, code comments and folder names (`milk_logs_backend/`) still reference the original paths for backward-compatibility; the product brand is now **milkedIn**.
 
-A secure, production-ready REST API for tracking daily milk consumption and expenses. The backend powers a mobile/frontend client that lets users log milk entries (by type/category), review daily and monthly summaries, and export their records as PDF or Excel reports.
+A secure, production-ready REST API for **milkedIn** — tracking daily milk consumption and expenses. The backend powers the cross-platform **milkedIn** client (Android / iOS / Web) that lets users log milk entries by category, review daily and monthly summaries, and export their records as PDF or Excel reports.
 
 Built with **Node.js + Express 5** and **PostgreSQL**, the codebase follows a clean, modular, layered architecture with request validation, JWT-based authentication, and transactional email notifications.
 
@@ -16,7 +17,7 @@ Built with **Node.js + Express 5** and **PostgreSQL**, the codebase follows a cl
 - [API Reference](#api-reference)
   - [Auth](#auth-api)
   - [Categories](#categories-api)
-  - [Milk Logs](#milk-logs-api)
+  - [milkedIn — Milk Logs](#milk-logs-api)
   - [AI Assistant](#ai-assistant)
   - [System](#system)
 - [Authentication Flow](#authentication-flow)
@@ -98,7 +99,7 @@ This separation keeps business rules testable and keeps the Express layer thin.
 ## Project Structure
 
 ```
-milk_logs_backend/
+milkedIn-backend/  (repo folder: milk_logs_backend/ — kept for history)
 ├── server.js                      # Entry point: boots email + starts listener
 ├── package.json
 ├── vercel.json                    # Vercel deployment config (catch-all rewrite)
