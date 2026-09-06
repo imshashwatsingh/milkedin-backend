@@ -142,7 +142,7 @@ milkedIn-backend/  (repo folder: milk_logs_backend/ — kept for history)
         └── ai/
             ├── ai.routes.js        # POST /api/ai/chat (auth required)
             ├── ai.controller.js
-            ├── ai.service.js       # Gemini tool-calling loop
+            ├── ai.service.js       # Gemini tool-calling loop + fallback chain
             ├── ai.tools.js         # 6 tool definitions + executors
             ├── ai.prompts.js       # System instruction (Asia/Kolkata)
             └── dto/Chat.dto.js
@@ -252,7 +252,7 @@ Base path: `/api/ai` — **all routes require authentication.**
 
 | Method | Endpoint | Body | Description |
 | ------ | -------- | ---- | ----------- |
-| POST   | `/chat`  | `message` (string, 1–1000 chars) | Ask a natural-language question; returns `{ answer, tools_used }` |
+| POST   | `/chat`  | `message` (string, 1–1000 chars) | Ask a natural-language question; returns `{ answer, tools_used, model_used }` (fallback chain auto-tried on busy/down) |
 
 Example:
 ```bash
@@ -266,9 +266,10 @@ Response:
 {
   "success": true,
   "message": "AI response generated successfully",
-  "data": { "answer": "You spent ₹1,780 on milk last month across 29.6 litres.", "tools_used": ["get_monthly_summary"] }
+  "data": { "answer": "You spent ₹1,780 on milk last month across 29.6 litres.", "tools_used": ["get_monthly_summary"], "model_used": "gemini-3.5-flash-lite" }
 }
 ```
+Fallback (if primary is rate-limited, `model_used` shows the fallback, e.g. `"gemini-2.5-flash-lite"`):
 
 ### System
 
@@ -505,15 +506,31 @@ export const allowedToolNames = new Set(Object.keys(executors));
 - Ask clarification for ambiguous periods ("recently" → "what period — this week/month or date range?").
 - Timezone is `Asia/Kolkata (IST, UTC+5:30)`; relative dates resolved against supplied `Today's date`.
 
-**Model config (`ai.service.js:69`):**
+**Model config & Fallback Chain (`ai.service.js:21`):**
 ```js
+// Primary + fallback chain (deduplicated, normalized)
+getModelChain() => [ GEMINI_MODEL || "gemini-3.5-flash-lite",
+                     ...GEMINI_FALLBACK_MODELS || DEFAULT_FALLBACK_MODELS ]
+
+// Defaults (stable GA, tool-calling, low-latency for simple MilkEdin usecase)
+DEFAULT_FALLBACK_MODELS = [
+  "gemini-2.5-flash-lite", // fastest/budget, highest RPM, same tool-calling
+  "gemini-2.5-flash",      // balanced flash
+  "gemini-3.5-flash",      // newer flash generation
+  "gemini-2.5-pro",        // reasoning fallback (last resort)
+]
+// Avoid gemini-2.0-* (shutdown Jun 1 2026) and preview models
+// See https://ai.google.dev/gemini-api/docs/models + /deprecations (Sep 2026)
+
 client.models.generateContent({
-  model: getModelName(), // GEMINI_MODEL env or "gemini-3.5-flash-lite"
-  contents,              // [{role:"user", parts:[{text: buildUserMessage(message, todayIST)}]}] + loop history
+  model: activeModel, // sticky: first successful model reused for remaining tool rounds
+  contents,           // [{role:"user", parts:[{text: buildUserMessage(message, todayIST)}]}] + loop history
   config: { systemInstruction: SYSTEM_INSTRUCTION, tools, temperature: 0.4 }
 })
+// Wrapped in generateWithFallback() with 45s timeout + 200ms backoff between retries
+// Response includes model_used so client knows which model answered
 ```
-`temperature 0.4` balances factual tool use vs natural phrasing. `MAX_TOOL_CALLS=5` bounds cost/latency; loop dedupes `tools_used` via `new Set`.
+`temperature 0.4` balances factual tool use vs natural phrasing. `MAX_TOOL_CALLS=5` bounds cost/latency; loop dedupes `tools_used` via `new Set`. Chain is configurable via `GEMINI_FALLBACK_MODELS="gemini-3.5-flash,gemini-2.5-pro"`.
 
 ### Date Handling — IST without extra deps
 
@@ -538,18 +555,20 @@ export function buildUserMessage(message, todayIST){
 - DTO (`dto/Chat.dto.js`): `Joi.string().trim().min(1).max(1000).required()` → rejects `""` / `"   "` / 1001-char spam; middleware `validate(ChatDto)` does `abortEarly:false, stripUnknown:true`.
 - Bound loop + `GEMINI_TIMEOUT_MS=45000` via `Promise.race` prevents hanging.
 
-### Error Handling & Resilience (`ai.service.js:83`)
+### Error Handling & Resilience (`ai.service.js:66`)
 
-| Condition | Detection | Response |
-|-----------|-----------|----------|
-| Missing `GEMINI_API_KEY` | `!process.env.GEMINI_API_KEY` in `getGenAIClient()` | `500 ApiError.internal("AI service is not configured...")` |
-| Timeout | `Promise.race` with 45s timer | `500 "AI service timed out. Please try again."` |
-| Rate limit / 503 High Demand | `msg.includes("429")/ "rate" / 503 / "high demand"` or `status 429/503` | `500 "AI service is busy (high demand). Please try again in a moment."` |
-| Bad API key | `401/403` or `API_KEY` in msg | `500 "AI service configuration error. Check GEMINI_API_KEY."` |
-| Invalid model | `unexpected model name format` / `is not found` / `no longer available` | `500 'AI model "X" is invalid... Update GEMINI_MODEL (try gemini-3.5-flash-lite).'` |
-| Invalid candidate | `!response.candidates[0]` | `500 "AI service returned an invalid response"` |
+| Condition | Detection | Fallback / Response |
+|-----------|-----------|---------------------|
+| Missing `GEMINI_API_KEY` | `!process.env.GEMINI_API_KEY` in `getGenAIClient()` | `500 ApiError.internal("AI service is not configured...")` — no fallback |
+| Timeout | `Promise.race` with 45s timer per model | Retryable → `generateWithFallback` tries next model with `200ms` backoff; after last model `500 "AI service is temporarily unavailable..."` |
+| Rate limit / 503 High Demand | `429/503/500/502/504`, `rate/quota/resource exhausted/overloaded/unavailable/high demand/busy` | Retryable → fallback to next model; after exhausting chain `500 "AI service is busy (high demand). Please try again in a moment."` |
+| Model busy/down/empty | `empty response`, `invalid response`, `no candidates`, `is not found/is not supported/no longer available/unexpected model` | Retryable → fallback; logs `[AI] Model "X" failed (...) falling back to "Y"` |
+| Bad API key | `401/403` or `API_KEY` in msg | **Not** retryable → `500 "AI service configuration error. Check GEMINI_API_KEY."` (fail-fast) |
+| Invalid candidate (no fallback left) | `!response.candidates[0]` after last model | `500 "AI service is temporarily unavailable. Please try again."` |
 | Unknown tool | `!allowedToolNames.has(name)` | `400 "AI requested an unknown tool: X"` |
 | Tool validation fail | `isValidDate/Month` false → `400` inside executor | Returned as `{error: msg}` **as tool result** so Gemini can explain gracefully (not thrown to client) |
+
+Fallback chain is **sticky**: first successful model is reused for remaining `MAX_TOOL_CALLS` tool rounds. Every fallback is logged (`console.warn`) with attempt index. `isRetryableError()` is the single gate for retry vs fail-fast.
 
 Tool errors are **not** thrown to the global handler; they are wrapped as `{error}` tool results and fed back — Gemini then says "I couldn't find records for that date" instead of the API returning 500.
 
@@ -565,9 +584,10 @@ Tool errors are **not** thrown to the global handler; they are wrapped as `{erro
 
 ### How to run
 
-1. Add `GEMINI_API_KEY` and optional `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) to `.env`.
+1. Add `GEMINI_API_KEY` and optional `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) + `GEMINI_FALLBACK_MODELS` to `.env` (see `.env.example`).
 2. `npm install && npm run dev`
 3. `curl -X POST http://localhost:3000/api/ai/chat -H "Authorization: Bearer <token>" -d '{"message":"How much did I drink in July?"}'`
+   Response now includes `model_used`: `{ answer, tools_used, model_used }`.
 
 ---
 
@@ -648,7 +668,8 @@ See `.env.example` for the full list. Required/important keys:
 | `EMAIL_FROM`             | Optional override for the "from" address.                |
 | `APP_URL`                | Base URL used in email links (e.g. `http://localhost:3000`). |
 | `GEMINI_API_KEY`         | Google Gemini API key (required for AI assistant).       |
-| `GEMINI_MODEL`           | Gemini model (default `gemini-2.0-flash`).                |
+| `GEMINI_MODEL`           | Primary Gemini model (default `gemini-3.5-flash-lite`).  |
+| `GEMINI_FALLBACK_MODELS` | Comma-separated fallback models tried if primary is busy/down/rate-limited/empty (default `gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash,gemini-2.5-pro`). |
 
 > **Gmail note:** Enable 2-Step Verification on the Google account and create
 > an [App Password](https://myaccount.google.com/apppasswords) for
