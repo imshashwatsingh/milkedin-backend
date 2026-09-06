@@ -18,12 +18,100 @@ function getTodayIST() {
   return `${y}-${m}-${d}`;
 }
 
+function normalizeModelName(raw) {
+  const normalized = raw.trim().toLowerCase().replace(/\s+/g, "-");
+  if (/[^a-z0-9._-]/.test(normalized) || normalized.length < 3) return null;
+  return normalized;
+}
+
 function getModelName() {
   const raw = (process.env.GEMINI_MODEL || "gemini-3.5-flash-lite").trim();
-  // normalize accidental "Gemini 3.1 Flash Lite" -> "gemini-3.1-flash-lite"
-  const normalized = raw.toLowerCase().replace(/\s+/g, "-");
-  if (/[^a-z0-9._-]/.test(normalized) || normalized.length < 3) return "gemini-3.5-flash-lite";
-  return normalized;
+  return normalizeModelName(raw) || "gemini-3.5-flash-lite";
+}
+
+// Similar, low-latency, tool-calling capable fallbacks for simple MilkEdin usecase.
+// Stable models per https://ai.google.dev/gemini-api/docs/models (Sep 2026) & deprecations:
+// - gemini-2.5-flash-lite / gemini-2.5-flash / gemini-2.5-pro are GA, no shutdown
+// - gemini-3.5-flash / gemini-3.5-flash-lite / gemini-3.6/3.7/3.8-flash are latest stable
+// Avoid gemini-2.0-* (shutdown Jun 1 2026) and preview models.
+const DEFAULT_FALLBACK_MODELS = [
+  "gemini-2.5-flash-lite", // fastest/budget, same tool-calling, highest RPM
+  "gemini-2.5-flash", // balanced flash
+  "gemini-3.5-flash", // newer flash generation
+  "gemini-2.5-pro", // reasoning fallback (last resort)
+];
+
+function getFallbackModels() {
+  const envRaw = process.env.GEMINI_FALLBACK_MODELS;
+  if (envRaw && envRaw.trim()) {
+    const parsed = envRaw
+      .split(",")
+      .map((s) => normalizeModelName(s))
+      .filter(Boolean);
+    if (parsed.length > 0) return parsed;
+  }
+  return DEFAULT_FALLBACK_MODELS;
+}
+
+function getModelChain() {
+  const primary = getModelName();
+  const fallbacks = getFallbackModels();
+  const chain = [primary];
+  for (const m of fallbacks) {
+    if (!chain.includes(m)) chain.push(m);
+  }
+  return chain;
+}
+
+function isRetryableError(err) {
+  // ApiError timeout from our own Promise.race is retryable
+  if (err instanceof ApiError) {
+    const m = (err.message || "").toLowerCase();
+    if (m.includes("timed out")) return true;
+    // auth errors are NOT retryable
+    if (err.statusCode === 401 || err.statusCode === 403) return false;
+    return false;
+  }
+  const msg = (err?.message || String(err)).toLowerCase();
+  const status = err?.status || err?.code || err?.statusCode;
+  // Auth / config errors -> not retryable
+  if (status === 401 || status === 403) return false;
+  if (msg.includes("api_key") || msg.includes("api key")) return false;
+  // All busy/down/overloaded/model-unavailable/empty cases -> retryable
+  if (
+    msg.includes("429") ||
+    msg.includes("rate") ||
+    msg.includes("quota") ||
+    msg.includes("resource exhausted") ||
+    msg.includes("503") ||
+    msg.includes("502") ||
+    msg.includes("500") ||
+    msg.includes("504") ||
+    status === 429 ||
+    status === 503 ||
+    status === 500 ||
+    status === 502 ||
+    status === 504 ||
+    msg.includes("overloaded") ||
+    msg.includes("overload") ||
+    msg.includes("unavailable") ||
+    msg.includes("high demand") ||
+    msg.includes("busy") ||
+    msg.includes("timeout") ||
+    msg.includes("deadline") ||
+    msg.includes("internal error") ||
+    msg.includes("try again") ||
+    msg.includes("temporarily") ||
+    msg.includes("empty response") ||
+    msg.includes("invalid response") ||
+    msg.includes("no candidates") ||
+    msg.includes("is not found") ||
+    msg.includes("is not supported") ||
+    msg.includes("no longer available") ||
+    msg.includes("unexpected model")
+  )
+    return true;
+  return false;
 }
 
 function getGenAIClient() {
@@ -47,9 +135,74 @@ function extractTextAndCalls(candidate) {
   return { text: text.trim(), calls };
 }
 
+async function generateWithFallback({ client, contents, systemInstruction, tools, temperature, modelChain, startIndex }) {
+  let lastError = null;
+  for (let i = startIndex; i < modelChain.length; i++) {
+    const model = modelChain[i];
+    try {
+      const promise = client.models.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction,
+          tools,
+          temperature,
+        },
+      });
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("AI service timed out")), GEMINI_TIMEOUT_MS)
+      );
+      const response = await Promise.race([promise, timeout]);
+      const candidate = response?.candidates?.[0];
+      if (!candidate || !candidate.content) {
+        throw new Error("AI service returned an invalid response - no candidates");
+      }
+      // Check for empty result (no text and no function calls) -> treat as retryable empty
+      const { text, calls } = extractTextAndCalls(candidate);
+      if (!text && calls.length === 0) {
+        // Some models return empty parts when overloaded
+        throw new Error("AI service returned an empty response");
+      }
+      return { response, model, index: i };
+    } catch (err) {
+      lastError = err;
+      const msg = err?.message || String(err);
+      const status = err?.status || err?.code || err?.statusCode;
+      const retryable = isRetryableError(err);
+      // Auth errors: fail fast, no fallback
+      if (!retryable) {
+        if (msg.includes("API_KEY") || msg.includes("API key") || status === 401 || status === 403) {
+          throw ApiError.internal("AI service configuration error. Check GEMINI_API_KEY.");
+        }
+        throw err;
+      }
+      // If retryable and we have more models, log and try next
+      if (i < modelChain.length - 1) {
+        const nextModel = modelChain[i + 1];
+        console.warn(`[AI] Model "${model}" failed (${status || ""} ${msg.slice(0, 300)}), falling back to "${nextModel}" (${i + 1}/${modelChain.length - 1})`);
+        // small delay to avoid hammering
+        await new Promise((r) => setTimeout(r, 200 * (i - startIndex + 1)));
+        continue;
+      }
+      // Last model also failed
+      console.error("[AI] All fallback models failed:", { lastModel: model, msg: msg.slice(0, 800), status });
+      // Map to user-friendly message
+      const lower = msg.toLowerCase();
+      if (msg.includes("429") || lower.includes("rate") || lower.includes("quota") || status === 429) {
+        throw ApiError.internal("AI service is busy (high demand). Please try again in a moment.");
+      }
+      if (lower.includes("503") || lower.includes("overloaded") || lower.includes("unavailable") || lower.includes("high demand") || status === 503) {
+        throw ApiError.internal("AI service is busy (high demand). Please try again in a moment.");
+      }
+      throw ApiError.internal("AI service is temporarily unavailable. Please try again.");
+    }
+  }
+  throw lastError || ApiError.internal("AI service is temporarily unavailable. Please try again.");
+}
+
 export async function chat({ userId, message }) {
   const client = getGenAIClient();
-  const model = getModelName();
+  const modelChain = getModelChain();
   const todayIST = getTodayIST();
 
   const contents = [
@@ -60,46 +213,26 @@ export async function chat({ userId, message }) {
   const toolsUsed = [];
   let iterations = 0;
   let finalAnswer = "";
+  let activeModelIndex = 0; // sticky: once a model succeeds, keep using it for subsequent tool rounds
+  let lastSuccessfulModel = modelChain[0];
 
   while (iterations < MAX_TOOL_CALLS) {
     iterations++;
 
-    let response;
-    try {
-      const promise = client.models.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION,
-          tools,
-          temperature: 0.4,
-        },
-      });
-      const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(ApiError.internal("AI service timed out. Please try again.")), GEMINI_TIMEOUT_MS)
-      );
-      response = await Promise.race([promise, timeout]);
-    } catch (err) {
-      if (err instanceof ApiError) throw err;
-      const msg = err?.message || String(err);
-      const status = err?.status || err?.code;
-      console.error("[AI] Gemini error:", { status, msg: msg.slice(0, 800), model });
-      if (msg.includes("429") || msg.toLowerCase().includes("rate") || status === 429 || status === 503 || msg.includes("503") || msg.toLowerCase().includes("unavailable") || msg.toLowerCase().includes("high demand")) {
-        throw ApiError.internal("AI service is busy (high demand). Please try again in a moment.");
-      }
-      if (msg.includes("API_KEY") || msg.includes("API key") || status === 401 || status === 403) {
-        throw ApiError.internal("AI service configuration error. Check GEMINI_API_KEY.");
-      }
-      if (
-        msg.includes("unexpected model name format") ||
-        (msg.toLowerCase().includes("is not found") && msg.toLowerCase().includes("model")) ||
-        (msg.toLowerCase().includes("is not supported") && msg.toLowerCase().includes("model")) ||
-        msg.includes("no longer available")
-      ) {
-        throw ApiError.internal(`AI model "${model}" is invalid or unavailable. Update GEMINI_MODEL in .env (try gemini-3.5-flash-lite).`);
-      }
-      console.error("[AI] Full error:", err);
-      throw ApiError.internal("AI service is temporarily unavailable. Please try again.");
+    const { response, model: usedModel, index: usedIndex } = await generateWithFallback({
+      client,
+      contents,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      tools,
+      temperature: 0.4,
+      modelChain,
+      startIndex: activeModelIndex,
+    });
+    // Stick to the successful model for next iterations (avoid flapping)
+    activeModelIndex = usedIndex;
+    lastSuccessfulModel = usedModel;
+    if (usedIndex !== 0) {
+      console.log(`[AI] Using fallback model "${usedModel}" (primary "${modelChain[0]}" failed)`);
     }
 
     const candidate = response?.candidates?.[0];
@@ -157,5 +290,5 @@ export async function chat({ userId, message }) {
     finalAnswer = "I gathered the data but could not formulate a final answer. Please try rephrasing your question.";
   }
 
-  return { answer: finalAnswer, tools_used: [...new Set(toolsUsed)] };
+  return { answer: finalAnswer, tools_used: [...new Set(toolsUsed)], model_used: lastSuccessfulModel };
 }
